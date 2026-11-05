@@ -1,0 +1,6 @@
+{
+  "name": "GeoChron",
+  "description": "Interactive Geography & History Atlas with offline vector maps, historical timelines, geography study notes, and bilingual Hindi/English quizzes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
