@@ -32,13 +32,22 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Configure Android SDK & Accept Licenses
+        run: |
+          SDK_DIR="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=${SDK_DIR}" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=${SDK_DIR}" >> $GITHUB_ENV
+
+          SDKMANAGER=$(find "${SDK_DIR}/cmdline-tools" -name sdkmanager | sort -V | tail -n 1)
+          if [ -n "$SDKMANAGER" ]; then
+            echo "Using sdkmanager at: $SDKMANAGER"
+            yes | "$SDKMANAGER" --licenses > /dev/null || true
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
