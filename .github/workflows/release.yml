@@ -1,0 +1,154 @@
+name: Android Release Build & Publish
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release Tag (e.g. v1.0.0)"
+        required: false
+        default: "v1.0.0"
+      create_release:
+        description: "Create GitHub Release with APK & AAB"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Signed APK & AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Prepare Environment (.env)
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env || touch .env
+          fi
+
+      - name: Prepare Debug & Release Keystores
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # 1. Ensure debug.keystore exists for debugConfig signing
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          # 2. Ensure release keystore (my-upload-key.jks) exists for release signing
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Using custom KEYSTORE_BASE64 from GitHub Secrets..."
+            echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
+            echo "STORE_PASSWORD=${SECRET_STORE_PASSWORD}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}" >> $GITHUB_ENV
+          else
+            echo "Generating self-signed release keystore (my-upload-key.jks)..."
+            DEFAULT_PASS="geochron_release_2026"
+            keytool -genkeypair -v \
+              -keystore my-upload-key.jks \
+              -storepass "$DEFAULT_PASS" \
+              -alias upload \
+              -keypass "$DEFAULT_PASS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=GeoChron Atlas,OU=Mobile,O=GeoChron,L=NewDelhi,S=Delhi,C=IN"
+            echo "STORE_PASSWORD=${DEFAULT_PASS}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${DEFAULT_PASS}" >> $GITHUB_ENV
+          fi
+          echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+
+      - name: Build Release APK, Debug APK & Release Bundle (AAB)
+        run: |
+          gradle assembleRelease assembleDebug bundleRelease --no-daemon --stacktrace
+
+      - name: Collect & Rename Build Outputs
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/GeoChron-Atlas-Release.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/GeoChron-Atlas-Debug.apk
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab dist/GeoChron-Atlas-Release.aab
+          fi
+          ls -lh dist/
+
+      - name: Upload APK & AAB Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoChron-Atlas-Android-Builds
+          path: |
+            dist/GeoChron-Atlas-Release.apk
+            dist/GeoChron-Atlas-Debug.apk
+            dist/GeoChron-Atlas-Release.aab
+          if-no-files-found: error
+
+      - name: Determine Release Tag
+        id: release_meta
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="v1.0.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release & Attach APK/AAB
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: "GeoChron Atlas ${{ steps.release_meta.outputs.tag }}"
+          body: |
+            ## 🌏 GeoChron: भूगोल और इतिहास एटलस (${{ steps.release_meta.outputs.tag }})
+
+            ### 📦 Downloads
+            - **`GeoChron-Atlas-Release.apk`** — Signed Release APK (Ready to install on any Android device)
+            - **`GeoChron-Atlas-Debug.apk`** — Signed Debug APK
+            - **`GeoChron-Atlas-Release.aab`** — Android App Bundle for Google Play Store
+          files: |
+            dist/GeoChron-Atlas-Release.apk
+            dist/GeoChron-Atlas-Debug.apk
+            dist/GeoChron-Atlas-Release.aab
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
